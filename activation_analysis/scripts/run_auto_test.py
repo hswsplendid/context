@@ -16,6 +16,10 @@ Usage:
         --output-dir results/full_experiment \
         --phases 1,2,3,4 \
         --seed 42
+
+最终指令：
+ python scripts/run_auto_test.py       --gpus 0,1,2,3,4,5       --cards-per-model 2       --model-path /root/share/models/Qwen2.5-32B-Instruct       --phases 1,2,3,4       --seed 42
+ gpu最好是2的倍数 每两个一对
 """
 
 import argparse

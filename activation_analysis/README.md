@@ -126,7 +126,7 @@ python scripts/run_experiment.py \
 | `--output-dir` | 来自配置 | 覆盖输出目录 |
 | `--experiment-id` | `single_exp` | 实验标识符 |
 
-输出保存至 `results/{experiment-id}/metrics.csv`。
+输出保存至 `results/{experiment-id}/metrics.csv`
 
 ### 2. 运行完整参数扫描
 

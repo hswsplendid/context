@@ -168,3 +168,16 @@
 * Create scripts/run_auto_test.py… (2m 5s · ↓ 22 tokens)                                                 
   ⎿  ✔ Create type1_replacements_multi_turn.yaml                                                              ✔ Create configs/auto_test.yaml                                                                     
      ◼ Create scripts/run_auto_test.py        
+
+
+@scripts/analyze_results.py can analyse the results. Please modify the analyse program so that it will generate more txt analysis result.    
+And you should directly read these txt files and analyse them. Give me a complete and comprehensive, detailed report in markdown file. The     
+test results are in ./activation_analysis/results/auto_test_20260312_065418                                                                    
+  ⎿  Read scripts/analyze_results.py (659 lines)
+
+continue 
+
+
+
+
+

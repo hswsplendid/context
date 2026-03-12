@@ -4,7 +4,7 @@ import logging
 import subprocess
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from .config import ModelConfig
 
@@ -154,7 +154,13 @@ def load_model_and_tokenizer(
 
     # Build device map
     if effective_gpu_ids is not None and len(effective_gpu_ids) > 0:
-        device_map = build_device_map(effective_gpu_ids, config.num_layers)
+        # Auto-detect layer count from the model's config.json
+        model_config = AutoConfig.from_pretrained(
+            config.model_path, trust_remote_code=True
+        )
+        num_layers = getattr(model_config, "num_hidden_layers", config.num_layers)
+        logger.info(f"Detected {num_layers} layers from model config")
+        device_map = build_device_map(effective_gpu_ids, num_layers)
     else:
         device_map = config.device_map
 

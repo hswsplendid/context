@@ -20,7 +20,6 @@ Usage:
 
 import argparse
 import logging
-import os
 import sys
 import time
 import uuid
@@ -39,7 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import ModelConfig, ExtractionConfig, PerturbationConfig, MetricsConfig, ExperimentConfig
-from src.model_loader import load_model_and_tokenizer
+from src.model_loader import load_model_and_tokenizer, probe_gpus
 from src.prompt_builder import load_template, load_replacements
 from src.paraphrase_generator import batch_generate_paraphrases
 from src.experiment_runner import run_single_experiment
@@ -94,6 +93,14 @@ def parse_args():
     parser.add_argument(
         "--resume", action="store_true",
         help="Resume from existing output-dir, skip completed experiments"
+    )
+    parser.add_argument(
+        "--cooldown", type=int, default=30,
+        help="Seconds to wait between staggered worker launches (default: 30)"
+    )
+    parser.add_argument(
+        "--min-free-gpu-mb", type=int, default=2048,
+        help="Minimum free GPU memory (MB) to consider a GPU available (default: 2048)"
     )
     return parser.parse_args()
 
@@ -199,18 +206,15 @@ def worker_fn(
 
     Writes results to worker-specific CSV to avoid file-lock contention.
     """
-    # Set GPU visibility
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
     torch.manual_seed(seed)
 
     worker_csv = Path(output_dir) / f"metrics_worker{worker_id}.csv"
 
-    # Build model config
+    # Build model config — gpu_ids passed explicitly to model loader
     model_cfg = ModelConfig(
         model_path=raw_config["model"]["model_path"],
         torch_dtype=raw_config["model"].get("torch_dtype", "bfloat16"),
-        device_map=raw_config["model"].get("device_map", "auto"),
-        max_gpu_count=None,  # We control via CUDA_VISIBLE_DEVICES
+        num_layers=raw_config["model"].get("num_layers", 49),
     )
 
     extraction_cfg = ExtractionConfig(
@@ -223,7 +227,7 @@ def worker_fn(
     )
 
     try:
-        model, tokenizer = load_model_and_tokenizer(model_cfg)
+        model, tokenizer = load_model_and_tokenizer(model_cfg, gpu_ids=gpu_ids)
     except Exception as e:
         logger.error(f"[Worker {worker_id}] Failed to load model: {e}")
         return
@@ -372,19 +376,18 @@ def run_sanity_checks(
     logger.info("Phase 1: Sanity Checks")
     logger.info("=" * 60)
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
     torch.manual_seed(seed)
 
     model_cfg = ModelConfig(
         model_path=raw_config["model"]["model_path"],
         torch_dtype=raw_config["model"].get("torch_dtype", "bfloat16"),
-        device_map=raw_config["model"].get("device_map", "auto"),
+        num_layers=raw_config["model"].get("num_layers", 49),
     )
     extraction_cfg = ExtractionConfig(
         layer_indices=raw_config["extraction"]["layer_indices"],
     )
 
-    model, tokenizer = load_model_and_tokenizer(model_cfg)
+    model, tokenizer = load_model_and_tokenizer(model_cfg, gpu_ids=gpu_ids)
 
     sanity_cfg = raw_config.get("sanity", {})
     identity_min = sanity_cfg.get("identity_cosine_min", 0.999)
@@ -520,6 +523,8 @@ def run_main_experiments(
     seed: int,
     quick: bool = False,
     resume: bool = False,
+    cooldown: int = 30,
+    min_free_gpu_mb: int = 2048,
 ):
     """Run Phase 2 (Type 1) or Phase 3 (Type 2) experiments with multi-GPU workers."""
     phase_name = "Type 1 (Content Replacement)" if phase == 2 else "Type 2 (Semantic Rewriting)"
@@ -565,16 +570,42 @@ def run_main_experiments(
             completed_ids=completed_ids,
         )
     else:
-        # Multi-worker: use multiprocessing
+        # Multi-worker: staggered launch with GPU probing
         mp.set_start_method("spawn", force=True)
         processes = []
         for i, (gpus, chunk) in enumerate(zip(gpu_groups, chunks)):
+            # Re-probe GPUs before each worker launch
+            max_retries = 3
+            for attempt in range(max_retries):
+                ready = probe_gpus(gpus, min_free_mb=min_free_gpu_mb)
+                if set(gpus).issubset(set(ready)):
+                    break
+                missing = set(gpus) - set(ready)
+                logger.warning(
+                    f"Worker {i}: GPUs {missing} not ready "
+                    f"(attempt {attempt + 1}/{max_retries}), "
+                    f"waiting {cooldown}s..."
+                )
+                time.sleep(cooldown)
+            else:
+                logger.warning(
+                    f"Worker {i}: GPUs {gpus} not all free after "
+                    f"{max_retries} retries — launching anyway"
+                )
+
             p = mp.Process(
                 target=worker_fn,
                 args=(i, gpus, chunk, raw_config, str(phase_dir), seed, completed_ids),
             )
             p.start()
             processes.append(p)
+
+            # Cooldown between worker starts (skip after last worker)
+            if i < len(gpu_groups) - 1:
+                logger.info(
+                    f"Worker {i} launched — waiting {cooldown}s before next worker"
+                )
+                time.sleep(cooldown)
 
         # Wait for all workers
         for p in processes:
@@ -836,9 +867,22 @@ def main():
     if args.model_path:
         raw_config["model"]["model_path"] = args.model_path
 
-    # Parse GPU list
+    # Parse GPU list and probe for available GPUs
     gpu_list = [int(g.strip()) for g in args.gpus.split(",")]
-    gpu_groups = allocate_gpus(gpu_list, args.cards_per_model)
+    min_free = args.min_free_gpu_mb
+
+    available_gpus = probe_gpus(candidate_gpus=gpu_list, min_free_mb=min_free)
+    if not available_gpus:
+        logger.error(
+            f"No GPUs available with >= {min_free} MB free from candidates {gpu_list}"
+        )
+        sys.exit(1)
+
+    unavailable = set(gpu_list) - set(available_gpus)
+    if unavailable:
+        logger.warning(f"GPUs {sorted(unavailable)} excluded (insufficient free memory)")
+
+    gpu_groups = allocate_gpus(available_gpus, args.cards_per_model)
 
     # Output directory
     if args.output_dir:
@@ -883,6 +927,8 @@ def main():
     # Execute phases
     seed = args.seed
 
+    cooldown = args.cooldown
+
     if 1 in phases:
         passed = run_sanity_checks(
             raw_config=raw_config,
@@ -892,6 +938,9 @@ def main():
         )
         if not passed:
             logger.error("Sanity checks failed! Continuing anyway...")
+        if 2 in phases or 3 in phases:
+            logger.info(f"Cooldown {cooldown}s between phases...")
+            time.sleep(cooldown)
 
     if 2 in phases:
         run_main_experiments(
@@ -902,7 +951,12 @@ def main():
             seed=seed,
             quick=args.quick,
             resume=args.resume,
+            cooldown=cooldown,
+            min_free_gpu_mb=min_free,
         )
+        if 3 in phases:
+            logger.info(f"Cooldown {cooldown}s between phases...")
+            time.sleep(cooldown)
 
     if 3 in phases:
         run_main_experiments(
@@ -913,6 +967,8 @@ def main():
             seed=seed,
             quick=args.quick,
             resume=args.resume,
+            cooldown=cooldown,
+            min_free_gpu_mb=min_free,
         )
 
     if 4 in phases:

@@ -28,6 +28,10 @@ def main():
     )
     parser.add_argument("--output-dir", type=str, default=None, help="Override output directory")
     parser.add_argument("--no-plots", action="store_true", help="Skip plot generation")
+    parser.add_argument(
+        "--gpus", type=str, default=None,
+        help="Comma-separated GPU IDs for explicit placement, e.g. '0,1'"
+    )
 
     args = parser.parse_args()
 
@@ -35,8 +39,13 @@ def main():
     if args.output_dir:
         config.output_dir = args.output_dir
 
+    # Parse explicit GPU IDs if provided
+    gpu_ids = None
+    if args.gpus:
+        gpu_ids = [int(g.strip()) for g in args.gpus.split(",")]
+
     logger.info("Loading model and tokenizer...")
-    model, tokenizer = load_model_and_tokenizer(config.model)
+    model, tokenizer = load_model_and_tokenizer(config.model, gpu_ids=gpu_ids)
 
     logger.info("Starting parameter sweep...")
     df = run_sweep(model, tokenizer, config)

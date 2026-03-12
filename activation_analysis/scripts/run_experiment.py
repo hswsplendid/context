@@ -34,6 +34,10 @@ def main():
     parser.add_argument("--pair-index", type=int, default=0, help="Index into replacement pairs")
     parser.add_argument("--output-dir", type=str, default=None, help="Override output directory")
     parser.add_argument("--experiment-id", type=str, default="single_exp", help="Experiment identifier")
+    parser.add_argument(
+        "--gpus", type=str, default=None,
+        help="Comma-separated GPU IDs for explicit placement, e.g. '0,1'"
+    )
 
     args = parser.parse_args()
 
@@ -46,8 +50,13 @@ def main():
 
     save_config(config, output_path / "config.yaml")
 
+    # Parse explicit GPU IDs if provided
+    gpu_ids = None
+    if args.gpus:
+        gpu_ids = [int(g.strip()) for g in args.gpus.split(",")]
+
     logger.info("Loading model and tokenizer...")
-    model, tokenizer = load_model_and_tokenizer(config.model)
+    model, tokenizer = load_model_and_tokenizer(config.model, gpu_ids=gpu_ids)
 
     template = load_template(config.template_path)
     replacements = load_replacements(config.replacements_path)

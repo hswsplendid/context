@@ -6,6 +6,8 @@ model:
   torch_dtype: "bfloat16"
   device_map: "auto"
   max_gpu_count: null
+  min_free_gpu_mb: 2048
+  num_layers: 49
 
 extraction:
   layer_indices: [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48]

@@ -12,7 +12,10 @@ class ModelConfig:
     model_path: str = "Qwen/Qwen3-30B-A3B"
     torch_dtype: str = "bfloat16"
     device_map: str = "auto"
-    max_gpu_count: Optional[int] = None
+    max_gpu_count: Optional[int] = None  # deprecated, kept for compat
+    gpu_ids: Optional[list[int]] = None
+    min_free_gpu_mb: int = 2048
+    num_layers: int = 49
 
 
 @dataclass
